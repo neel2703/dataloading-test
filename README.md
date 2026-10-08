@@ -5,7 +5,7 @@ into a PyTorch `DataLoader`? This benchmarks OME-TIFF (`tifffile`, raw
 memmap) against Zarr / OME-Zarr (`zarr-python` + `zarrs`, `dask`, `xarray`,
 `SpatialData`, `tensorstore`, `miao`), on CPU only.
 
-## Why this matters: the read-amplification effect
+## The read-amplification effect
 
 The source image is stored in on-disk chunks/tiles of `CHUNK` pixels
 (default 512x512). Each requested patch is `PATCH_SIZE` pixels (default
@@ -15,39 +15,6 @@ one** 512px chunk even though it only needs a quarter of each. This
 over-fetch -- "read amplification" -- is a property of the chunk/patch size
 ratio, not of any particular library, and it's one reason smaller-chunk /
 better-aligned layouts can win even when they add per-chunk overhead.
-
-## Future work: random vs. grid coordinates
-
-Right now every method is benchmarked only on the 500 scattered random
-patches described above. A natural follow-up: add a second coordinate
-pattern -- a non-overlapping, `PATCH_SIZE`-aligned grid of tiles, top-left
-first, row-major -- and run every method on both.
-
-The random pattern is the realistic one (a training dataloader doing
-random-crop augmentation), and is the worst case for read amplification,
-since a patch almost never lines up with a chunk boundary. A grid pattern
-would isolate that effect directly: comparing grid vs. random throughput for
-the *same* method measures read amplification (a patch spanning multiple
-on-disk chunks) and chunk reuse (sequential neighbors sharing an
-already-decoded chunk) instead of just asserting it in prose, as this
-section currently does.
-
-It would also finally let `miao` be compared against everything else on
-equal footing: `VolumeDataset` doesn't accept external coordinates, so right
-now it has no entry in the shared comparison at all (see "miao caveat"
-below) -- a grid pattern similar to its own internal `sampling="sequential"`
-mode is the natural way to make it comparable, since its own grid is the
-*same kind* of access even if not byte-identical to an independently-built
-one.
-
-This was prototyped once and rolled back -- it worked, but added enough
-surface area (mode-parameterized output paths, a second coordinate builder,
-per-mode method filtering, a comparison report) that it felt like it should
-land as its own deliberate change rather than bundled into this pass.
-Picking it back up mainly means: a `coords.py` with a grid-tile builder next
-to the existing random one, teaching the runner/plotting to tag outputs by
-mode, and a small comparison report (`grid patches/s ÷ random patches/s` per
-method).
 
 ## The method ladder
 
