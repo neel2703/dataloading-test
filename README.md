@@ -63,8 +63,8 @@ previous one's cost:
 | 8-9 | `dask_zarr` | + `dask.array.from_zarr` overhead on top of (6-7) |
 | 10-11 | `xr_dask` | + `xarray.DataArray` wrapping overhead on top of (8-9) |
 | 12-13 | `spatialdata` (`read_zarr`) | + full SpatialData read-path overhead on top of (10-11) |
-| 14 | `tensorstore_direct` | Plain tensorstore read of the same scale-0 array -- floor of the miao-adjacent path |
-| 15 | `miao` | + miao's own overhead (OME-NGFF metadata parsing, axes handling, config validation) on top of (14) |
+| 14 | `tensorstore_direct` | Plain tensorstore (C++) read of the same scale-0 array (compressed store) -- compare with 6 to separate the zarr *format* from the zarr-python *library*; also the base layer under miao |
+| 15 | `miao` | + miao's own overhead on top of (14) -- **only once both read the same coordinates**; currently miao samples its own grid (see caveat) |
 
 Compressed vs. uncompressed scale-0 arrays (6/7, 8/9, 10/11, 12/13) isolate
 decompression cost specifically; everything else about those pairs is
@@ -106,11 +106,6 @@ compared as if they were equivalent.
 ## Reproducing
 
 ```bash
-# with uv (recommended)
-uv sync
-uv run python scripts/run_benchmark.py --data-dir ./data
-
-# or plain pip
 pip install -r requirements.txt
 python scripts/run_benchmark.py --data-dir ./data
 ```
@@ -126,11 +121,6 @@ python scripts/run_benchmark.py --data-dir ./ci-data --synthetic --n-patches 20
 
 # only run a subset of methods
 python scripts/run_benchmark.py --data-dir ./data --methods full tiff_memmap miao
-
-# profile one method with py-spy (flamegraph) + memray, instead of the full sweep
-# (coordinate-driven methods only -- miao is index-driven, see the caveat below)
-pip install py-spy memray   # memray: Linux/macOS only, no Windows wheel
-python scripts/run_benchmark.py --data-dir ./data --profile zarr_direct_uncompressed
 ```
 
 Before running against the real dataset, set the Dropbox direct-download
@@ -162,9 +152,14 @@ method is checked against. It's still benchmarked for throughput alongside
 everyone else (reading its own sequential grid rather than the shared
 random coordinates)
 
+Because its grid is chunk-aligned and sequential (each patch sits inside one
+chunk and neighbours reuse it), miao's throughput reflects an easier access
+pattern than the random patches every other method reads. **Its number is not
+directly comparable** to the other rows yet.
+
 ## Results
 
-One run against a Xenium Brest Cancer IF Image (500 random 256x256 patches, batch
+One run against a Xenium Breast Cancer IF Image (500 random 256x256 patches, batch
 32, 1 warmup + 5 timed runs, single process, warm OS page cache -- see
 caveats above), from `--data-dir ../data` (run from the repo root). Full
 precision and per-run spread in `../data/results.csv`; environment details
