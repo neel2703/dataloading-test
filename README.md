@@ -188,6 +188,6 @@ in `../data/environment.json`.
 | tensorstore_direct | miao_ladder | 0.0023 | 0.2235 | 2,238 |
 | miao | miao_ladder | 0.0052 | 0.1830 | 2,732 |
 
-![throughput](../data/results_throughput.png)
-![open-time](../data/results_open.png)
+![throughput](viz/results_throughput.png)
+![open-time](viz/results_open.png)
 
