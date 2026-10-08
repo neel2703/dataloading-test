@@ -5,10 +5,6 @@ into a PyTorch `DataLoader`? This benchmarks OME-TIFF (`tifffile`, raw
 memmap) against Zarr / OME-Zarr (`zarr-python` + `zarrs`, `dask`, `xarray`,
 `SpatialData`, `tensorstore`, `miao`), on CPU only.
 
-**Open question:** can any Zarr-based path beat an uncompressed memmap'd
-OME-TIFF for this access pattern? Results are below, intended to be shared
-with scverse / OME-Zarr (NGFF) maintainers.
-
 ## Why this matters: the read-amplification effect
 
 The source image is stored in on-disk chunks/tiles of `CHUNK` pixels
