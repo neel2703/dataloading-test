@@ -39,18 +39,26 @@ class MiaoVolume(Method):
     name = "miao"
     family = "miao_ladder"
 
-    def __init__(self, store: Path, image_name: str, patch_size: int):
+    def __init__(self, store: Path, image_name: str, patch_size: int,
+                 sampling: str = "sequential", samples_per_epoch: int | None = None,
+                 seed: int = 0):
         self.store = store
         self.image_name = image_name
         self.patch_size = patch_size
+        self.sampling = sampling
+        self.samples_per_epoch = samples_per_epoch
+        self.seed = seed
         self._dataset = None
         self._scale = 1.0   # divisor matching base.to_float01's uint8/uint16 scaling
+        self._shape_yx: tuple[int, int] | None = None
 
     def open(self) -> None:
         from miao import VolumeDataset
         from miao.config import MiaoConfig, VolumeConfig
 
-        native_dtype = scale0_array(self.store, self.image_name).dtype
+        arr = scale0_array(self.store, self.image_name)
+        self._shape_yx = (int(arr.shape[-2]), int(arr.shape[-1]))
+        native_dtype = arr.dtype
         if native_dtype == np.uint8:
             self._scale = 255.0
         elif native_dtype == np.uint16:
@@ -78,15 +86,28 @@ class MiaoVolume(Method):
             # placeholder voxel size (one scale, one entry per spatial axis: y, x)
             # -- learned from a second validation error, not guessed up front.
             resolutions=[[1.0, 1.0]],
-            sampling="sequential",   # deterministic grid -> coordinates we can verify
+            sampling=self.sampling,  # "sequential" = deterministic grid -> coordinates we can verify
             # image_dtype="float32" makes miao cast raw ints to float32 WITHOUT
             # rescaling (normalize=False) -- base.to_float01 would then see an
             # already-float array and skip its own /255 or /65535 step, so we
             # can't reuse it here; _scale (computed above from the real on-disk
             # dtype) replicates exactly what to_float01 does for every other method.
             image_dtype="float32",
+            # samples_per_epoch is only consulted by miao in sampling="random"
+            # mode (VolumeDataset.__len__); it is ignored in "sequential" mode,
+            # so it is only passed when it actually matters.
+            **({"samples_per_epoch": self.samples_per_epoch}
+               if self.sampling == "random" and self.samples_per_epoch is not None else {}),
         )
         self._dataset = VolumeDataset(config)
+        if self.sampling == "random":
+            # miao draws random centers from the *module-level* np.random inside
+            # VolumeDataset.__getitem__ (miao-io 0.4.2, src/miao/dataset.py), so
+            # reseeding here -- immediately before the reads that follow open() --
+            # makes the patch sequence reproducible across the recording pass, the
+            # verification pass and every timed run. Only done in "random" mode, so
+            # the default ("sequential") path is unchanged.
+            np.random.seed(self.seed)
 
     def __len__(self) -> int:
         return len(self._dataset)
@@ -97,6 +118,44 @@ class MiaoVolume(Method):
         while img.ndim > 2:                 # squeeze the singleton level/channel dims
             img = img[0]
         return (img / self._scale).astype(np.float32)
+
+    def read_patch_and_coord_by_index(self, i: int) -> tuple[np.ndarray, tuple[int, int]]:
+        """Same read as read_patch_by_index(), plus the TOP-LEFT (y, x) miao used.
+
+        miao reports patch positions as CENTERS, via the public
+        `sample["meta"]["coordinate"]` (output_axes spatial order, so "yx" for
+        output_axes="lcyx"). It is populated in both sampling modes, which is why
+        this uses it instead of the private `_grid` that `grid_center()` reads.
+
+        The center -> top-left conversion below replicates miao's own origin
+        computation in `VolumeDataset.__getitem__` (miao-io 0.4.2,
+        src/miao/dataset.py):
+
+            origin = clip(floor((center + img_offset) / rel_factors) - eff_shape // 2,
+                          0, level_shape - eff_shape)
+
+        For this benchmark's single-level, single-resolution store img_offset == 0
+        and rel_factors == 1, so it reduces to the clip below -- edge-clamped grid
+        positions included, exactly as miao produces them. This mirrors a miao
+        internal rather than calling it; verify.py proves it is right by comparing
+        miao's own returned pixels against the full-image reference at these
+        coordinates.
+        """
+        batch = self._dataset[i]
+        img = np.asarray(batch["img"])
+        while img.ndim > 2:
+            img = img[0]
+        cy, cx = (int(v) for v in batch["meta"]["coordinate"])
+        ph, (h, w) = self.patch_size, self._shape_yx
+        y = int(np.clip(cy - ph // 2, 0, h - ph))
+        x = int(np.clip(cx - ph // 2, 0, w - ph))
+        return (img / self._scale).astype(np.float32), (y, x)
+
+    def record_coords(self, n: int) -> list[tuple[int, int]]:
+        """The first `min(n, len(self))` patch positions, in miao's own read
+        order, as top-left (y, x). open() must have been called first."""
+        return [self.read_patch_and_coord_by_index(i)[1]
+                for i in range(min(n, len(self)))]
 
     def grid_center(self, i: int):
         """(y, x) center miao itself picked for item i -- see module docstring."""
@@ -112,4 +171,6 @@ class MiaoVolume(Method):
 
 @register("miao")
 def _factory(cfg: BenchConfig) -> Method:
-    return MiaoVolume(cfg.sdata_compressed, cfg.image_name, cfg.patch_size)
+    return MiaoVolume(cfg.sdata_compressed, cfg.image_name, cfg.patch_size,
+                      sampling=cfg.miao_sampling, samples_per_epoch=cfg.n_patches,
+                      seed=cfg.seed)

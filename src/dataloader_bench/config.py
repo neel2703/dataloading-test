@@ -6,10 +6,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
 @dataclass
 class BenchConfig:
     # --- paths -----------------------------------------------------------
-    data_dir: Path
+    data_dir: Path                 # derived files (page0_*, the zarr stores) + environment.json
+    viz_dir: Path = REPO_ROOT / "viz"   # results.csv + the plots, kept with the README's images
     src_path: Path | None = None   # point this at your own TIFF to skip download_src() entirely
     src_name: str = "Xenium_FFPE_Human_Breast_Cancer_Rep1_if_image.tif"
     # Direct-download Dropbox link (dl=1). Paste the real link before running
@@ -32,6 +36,11 @@ class BenchConfig:
     # --- repeats ------------------------------------------------------------
     warmup_runs: int = 1
     timed_runs: int = 5
+
+    # --- miao-coords pass ---------------------------------------------------
+    # miao picks its own patch positions; `miao_sampling` selects which of its
+    # two modes is recorded and replayed by the --miao-coords pass.
+    miao_sampling: str = "sequential"   # "sequential" (grid) or "random"
 
     # --- misc ---------------------------------------------------------------
     image_name: str = "image"      # name the spatialdata image is stored under
@@ -89,15 +98,15 @@ class BenchConfig:
 
     @property
     def results_csv(self) -> Path:
-        return self.data_dir / "results.csv"
+        return Path(self.viz_dir) / "results.csv"
 
     @property
     def results_png(self) -> Path:
-        return self.data_dir / "results_throughput.png"
+        return Path(self.viz_dir) / "results_throughput.png"
 
     @property
     def results_open_png(self) -> Path:
-        return self.data_dir / "results_open.png"
+        return Path(self.viz_dir) / "results_open.png"
 
     @property
     def env_json(self) -> Path:

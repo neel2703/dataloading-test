@@ -50,13 +50,37 @@ def verify_miao(ref: Method, miao_method: MiaoVolume, n_check: int, ph: int) -> 
         miao_method.close()
 
 
+def verify_miao_coords(ref: Method, miao_method: MiaoVolume,
+                        coords: list[tuple[int, int]], n_check: int, ph: int) -> None:
+    """miao-coords pass: `coords` were recorded from miao itself, so item i must
+    equal the reference at coords[i]. This doubles as the proof that the
+    center -> top-left conversion in MiaoVolume.read_patch_and_coord_by_index
+    is correct."""
+    miao_method.open()
+    try:
+        for i in range(min(n_check, len(coords), len(miao_method))):
+            patch, yx = miao_method.read_patch_and_coord_by_index(i)
+            if yx != tuple(coords[i]):
+                raise AssertionError(
+                    f"miao: item {i} replayed at {yx}, but {tuple(coords[i])} was recorded"
+                )
+            if not np.array_equal(ref.read_patch(yx[0], yx[1], ph), patch):
+                raise AssertionError(f"miao: item {i} at (y={yx[0]}, x={yx[1]}) differs from reference")
+    finally:
+        miao_method.close()
+
+
 def verify_all(cfg: BenchConfig, ref: Method, others: dict[str, Method],
-                coords: list[tuple[int, int]], n_check: int = 20) -> None:
+                coords: list[tuple[int, int]], n_check: int = 20,
+                miao_coords: list[tuple[int, int]] | None = None) -> None:
     ref.open()
     try:
         for name, method in others.items():
             if isinstance(method, MiaoVolume):
-                verify_miao(ref, method, n_check, cfg.patch_size)
+                if miao_coords is not None:
+                    verify_miao_coords(ref, method, miao_coords, n_check, cfg.patch_size)
+                else:
+                    verify_miao(ref, method, n_check, cfg.patch_size)
             else:
                 verify_coord_method(ref, method, coords, n_check, cfg.patch_size)
             print(f"[verify] {name}: OK")

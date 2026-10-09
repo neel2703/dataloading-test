@@ -31,7 +31,7 @@ previous one's cost:
 | 10-11 | `xr_dask` | + `xarray.DataArray` wrapping overhead on top of (8-9) |
 | 12-13 | `spatialdata` (`read_zarr`) | + full SpatialData read-path overhead on top of (10-11) |
 | 14 | `tensorstore_direct` | Plain tensorstore (C++) read of the same scale-0 array (compressed store) -- compare with 6 to separate the zarr *format* from the zarr-python *library*; also the base layer under miao |
-| 15 | `miao` | + miao's own overhead on top of (14) -- **only once both read the same coordinates**; currently miao samples its own grid (see caveat) |
+| 15 | `miao` | + miao's own overhead on top of (14), both reading the same coordinates |
 
 Compressed vs. uncompressed scale-0 arrays (6/7, 8/9, 10/11, 12/13) isolate
 decompression cost specifically; everything else about those pairs is
@@ -80,7 +80,7 @@ python scripts/run_benchmark.py --data-dir ./data
 Useful flags:
 
 ```bash
-# use your own image instead of the Xenium dataset (page 0 is read; any TIFF works)
+# use your own image (page 0 is read; any TIFF works)
 python scripts/run_benchmark.py --data-dir ./data --src /path/to/your_image.tif
 
 # CI / quick smoke test, no download, no real dataset
@@ -88,6 +88,12 @@ python scripts/run_benchmark.py --data-dir ./ci-data --synthetic --n-patches 20
 
 # only run a subset of methods
 python scripts/run_benchmark.py --data-dir ./data --methods full tiff_memmap miao
+
+# read miao's own patch positions instead of the shared random ones (see "miao coordinates")
+python scripts/run_benchmark.py --data-dir ./data --miao-coords
+
+# ... using miao's random sampling mode instead of its default sequential grid
+python scripts/run_benchmark.py --data-dir ./data --miao-coords --miao-sampling random
 ```
 
 Before running against the real dataset, set the Dropbox direct-download
@@ -95,10 +101,11 @@ link in `src/dataloader_bench/config.py` (`BenchConfig.src_url`, `dl=1`) --
 or just drop the source TIFF into `--data-dir` yourself and it'll be used
 as-is.
 
-Outputs land in `--data-dir`: `results.csv`, `results_throughput.png`,
-`results_open.png`, `environment.json` (python/numpy/zarr/zarrs/
-tifffile/dask/xarray/spatialdata/tensorstore/torch versions, OS, CPU, and
-the local-disk-vs-network-share guess).
+`results.csv`, `results_throughput.png` and `results_open.png` are written to
+`viz/` (override with `--viz-dir`). The derived files, the source image and
+`environment.json` (python/numpy/zarr/zarrs/tifffile/dask/xarray/spatialdata/
+tensorstore/torch versions, OS, CPU, and the local-disk-vs-network-share
+guess) stay in `--data-dir`.
 
 ## Adding a new method
 
@@ -108,47 +115,52 @@ Add one file under `src/dataloader_bench/methods/`, implement `open()` +
 add `"your_name"` to `BenchConfig.methods`. That's the whole contract --
 nothing else in the runner, verifier, or plotting code needs to change.
 
-## miao caveat
+## miao coordinates
 
-`miao.VolumeDataset` samples patches itself (randomly, or on a fixed grid in
-`sampling="sequential"` mode) -- it doesn't accept externally-chosen
-coordinates. Because of that, the pixel-identity check for `miao`
-specifically verifies against the coordinates *it* picked (read back from
-its sequential grid), not the shared random-coordinate list every other
-method is checked against. It's still benchmarked for throughput alongside
-everyone else (reading its own sequential grid rather than the shared
-random coordinates)
+`miao.VolumeDataset` picks its own patch positions and doesn't accept
+externally-chosen coordinates, so `--miao-coords` goes the other way: it
+records the positions miao actually reads -- from the public
+`sample["meta"]["coordinate"]`, converted from miao's centers to the
+top-left `(y, x)` every other method takes -- and then runs every method
+over that exact list, in that exact order. The pixel-identity check covers
+every method, miao included, at those same coordinates.
 
-Because its grid is chunk-aligned and sequential (each patch sits inside one
-chunk and neighbours reuse it), miao's throughput reflects an easier access
-pattern than the random patches every other method reads. **Its number is not
-directly comparable** to the other rows yet.
+`--miao-sampling` selects which miao mode is recorded: `sequential` (its
+chunk-aligned grid, the default) or `random`. Random mode is made
+reproducible by reseeding `np.random` before each run, so it requires
+`--num-workers 0`.
 
 ## Results
 
-One run against a Xenium Breast Cancer IF Image (500 random 256x256 patches, batch
+One `--miao-coords` run against a Xenium Breast Cancer IF Image (page 0,
+9777x14239 uint8): the first 500 positions of miao's sequential grid, batch
 32, 1 warmup + 5 timed runs, single process, warm OS page cache -- see
-caveats above), from `--data-dir ../data` (run from the repo root). Full
-precision and per-run spread in `../data/results.csv`; environment details
-in `../data/environment.json`.
+caveats above. Full precision and per-run spread in `viz/results.csv`;
+environment details in `environment.json`.
+
+Hardware: AMD64 family 23 model 96 (AuthenticAMD), 12 logical cores,
+Windows 11 (10.0.26200), local disk (not a network share), 173 GB free.
+Python 3.11.17, torch 2.14.1+cpu, numpy 2.4.6, zarr 3.1.6, zarrs 0.2.3,
+tifffile 2026.3.3, dask 2026.1.1, xarray 2026.9.0, spatialdata 0.7.3,
+miao-io 0.4.2.
 
 | Method | Family | open (s, median) | read (s, median) | patches/s (median) |
 |---|---|---|---|---|
-| full | baseline | 0.6005 | 0.0263 | 19,022 |
-| tiff_ome_uncompressed | tiff | 0.0013 | 0.2824 | 1,771 |
-| tiff_ome_compressed | tiff | 0.0012 | 0.3810 | 1,312 |
-| tiff_plain_tiled | tiff | 0.0011 | 0.2844 | 1,758 |
-| tiff_memmap | tiff | 0.0006 | 0.0711 | 7,034 |
-| zarr_direct_compressed | zarr_ladder | 0.0023 | 0.4014 | 1,246 |
-| zarr_direct_uncompressed | zarr_ladder | 0.0022 | 0.4440 | 1,126 |
-| dask_zarr_compressed | zarr_ladder | 0.0058 | 1.6236 | 308 |
-| dask_zarr_uncompressed | zarr_ladder | 0.0058 | 1.2472 | 401 |
-| xr_dask_compressed | zarr_ladder | 0.0060 | 1.6495 | 303 |
-| xr_dask_uncompressed | zarr_ladder | 0.0059 | 1.2624 | 396 |
-| spatialdata_compressed | zarr_ladder | 0.0081 | 1.4770 | 339 |
-| spatialdata_uncompressed | zarr_ladder | 0.0078 | 1.3591 | 368 |
-| tensorstore_direct | miao_ladder | 0.0023 | 0.2235 | 2,238 |
-| miao | miao_ladder | 0.0052 | 0.1830 | 2,732 |
+| full | baseline | 1.2712 | 0.0602 | 8,312 |
+| tiff_ome_uncompressed | tiff | 0.0031 | 0.6655 | 751 |
+| tiff_ome_compressed | tiff | 0.0026 | 0.8130 | 615 |
+| tiff_plain_tiled | tiff | 0.0024 | 0.5988 | 835 |
+| tiff_memmap | tiff | 0.0014 | 0.0994 | 5,028 |
+| zarr_direct_compressed | zarr_ladder | 0.0058 | 0.9758 | 512 |
+| zarr_direct_uncompressed | zarr_ladder | 0.0068 | 1.2702 | 394 |
+| dask_zarr_compressed | zarr_ladder | 0.0186 | 2.8398 | 176 |
+| dask_zarr_uncompressed | zarr_ladder | 0.0170 | 2.5914 | 193 |
+| xr_dask_compressed | zarr_ladder | 0.0171 | 2.9374 | 170 |
+| xr_dask_uncompressed | zarr_ladder | 0.0177 | 2.7474 | 182 |
+| spatialdata_compressed | zarr_ladder | 0.0228 | 2.8556 | 175 |
+| spatialdata_uncompressed | zarr_ladder | 0.0225 | 3.0618 | 163 |
+| tensorstore_direct | miao_ladder | 0.0056 | 0.4865 | 1,028 |
+| miao | miao_ladder | 0.0138 | 0.6048 | 827 |
 
 ![throughput](viz/results_throughput.png)
 ![open-time](viz/results_open.png)
